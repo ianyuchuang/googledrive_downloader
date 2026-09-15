@@ -3,7 +3,7 @@
 
 做三件事：
 1. 帶著使用者去 Google Cloud 申請 API 金鑰（自動開好瀏覽器頁面）
-2. 當場驗證金鑰能不能真的讀到照片資料夾
+2. 當場驗證金鑰能不能真的讀到要下載的資料夾
 3. 把金鑰與儲存位置寫進 settings.json
 
 如果程式資料夾裡放了 `預設金鑰.txt`，就直接用裡面那把金鑰，不再問使用者。
@@ -77,7 +77,7 @@ def guide_apply_key():
     """一步一步帶著申請金鑰。"""
     title("步驟 1／3　申請 Google API 金鑰")
     print("""
-這個工具要讀雲端硬碟上的照片，需要一把「API 金鑰」。
+這個工具要讀雲端硬碟上的檔案，需要一把「API 金鑰」。
 只要申請一次，之後就不用再弄。整個過程大約 3 分鐘，免費。
 
 接下來會幫你依序開三個網頁，請照著做：
@@ -88,7 +88,7 @@ def guide_apply_key():
     open_page(CONSOLE_URL, "建立專案頁")
     print("""
     · 用你的 Google 帳號登入
-    · 專案名稱隨便打，例如 photo-downloader
+    · 專案名稱隨便打，例如 drive-downloader
     · 按「建立」，等右上角轉圈結束
 """)
     ask("  建好了按 Enter 繼續…")
@@ -115,7 +115,7 @@ def guide_apply_key():
 
 
 def verify(key, folder_id):
-    """驗證金鑰；成功回傳日期資料夾數量，失敗回傳 None。"""
+    """驗證金鑰；成功回傳資料夾最上層的項目數，失敗回傳 None。"""
     print("\n  驗證中…", end="")
     sys.stdout.flush()
     try:
@@ -126,7 +126,7 @@ def verify(key, folder_id):
     except Exception as e:
         print("\r  ✗ 驗證失敗：%s：%s" % (e.__class__.__name__, e))
         return None
-    print("\r  ✔ 金鑰可用，讀到 %d 個日期資料夾。   " % n)
+    print("\r  ✔ 金鑰可用，資料夾裡有 %d 個項目。   " % n)
     return n
 
 
@@ -134,11 +134,11 @@ def main():
     cfg = config.load()
     folder_id = cfg.get("folder_id") or config.DEFAULT_FOLDER_ID
 
-    title("施工照片下載工具　首次設定")
+    title("資料夾檔案下載工具　首次設定")
 
-    # --- 照片資料夾 ---
+    # --- 要下載的資料夾 ---
     while not folder_id:
-        entered = ask("\n  請貼上照片上傳資料夾的雲端硬碟連結（或資料夾 ID）：\n  > ")
+        entered = ask("\n  請貼上要下載的雲端硬碟資料夾連結（或資料夾 ID）：\n  > ")
         folder_id = parse_folder_id(entered)
         if not folder_id:
             print("  沒有讀到資料夾 ID，請再貼一次。")
@@ -180,7 +180,7 @@ def main():
                 break
 
     # --- 儲存位置 ---
-    title("步驟 3／3　照片要存到哪裡")
+    title("步驟 3／3　檔案要存到哪裡")
     default_out = cfg.get("output_dir") or config.DEFAULTS["output_dir"]
     print("\n  預設：%s" % default_out)
     out = ask("  直接按 Enter 用預設，或貼上你要的資料夾路徑：\n  > ", default_out)
@@ -198,8 +198,8 @@ def main():
     print("""
   以後要用，就雙擊資料夾裡的【執行.bat】。
 
-  操作順序：讀取日期 → 勾選要下載的日期 → 開始下載
-  照片會存成  %s\\20260830\\  ，同一天另外打包成 20260830.zip
+  操作順序：讀取清單 → 勾選要下載的資料夾或檔案 → 開始下載
+  檔案會存到  %s\\  底下，資料夾保留原本的子資料夾結構
 """ % out)
 
 

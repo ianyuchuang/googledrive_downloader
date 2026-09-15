@@ -36,22 +36,27 @@ def unique_path(folder, name):
 
 
 class DownloadWorker(QThread):
-    """把選到的日期一天一天下載下來，每天結束後（可選）打包成 zip。"""
+    """把勾選的項目一個一個下載下來。
+
+    勾的是資料夾 → 整個資料夾（含子資料夾）存到 儲存位置\\資料夾名\\，保留原本的層次，
+                   可另外打包成 儲存位置\\資料夾名.zip
+    勾的是檔案   → 直接存到 儲存位置\\ 底下
+    """
 
     log = pyqtSignal(str)                 # 一行訊息
     file_progress = pyqtSignal(int, int)  # 已完成檔數, 總檔數
     current = pyqtSignal(str)             # 目前在做什麼
-    date_done = pyqtSignal(str, int, str) # 日期, 張數, zip 路徑（沒打包就空字串）
+    item_done = pyqtSignal(str, int, str) # 項目名稱, 檔案數, zip 路徑（沒打包就空字串）
     finished_all = pyqtSignal(int, int, int)  # 下載, 跳過, 失敗
     failed = pyqtSignal(str)              # 整批中止的原因
 
-    # 連續被 Google 擋這麼多次就整批停下來，不要傻傻磨完幾百張全部失敗
+    # 連續被 Google 擋這麼多次就整批停下來，不要傻傻磨完幾百個檔案全部失敗
     MAX_CONSECUTIVE_BLOCKS = 5
 
-    def __init__(self, client, dates, output_dir, make_zip=True, skip_existing=True, parent=None):
+    def __init__(self, client, items, output_dir, make_zip=True, skip_existing=True, parent=None):
         super(DownloadWorker, self).__init__(parent)
         self.client = client
-        self.dates = dates            # [{'date','label','id'}]
+        self.items = items            # [{'id','name','is_folder','size',...}]
         self.output_dir = output_dir
         self.make_zip = make_zip
         self.skip_existing = skip_existing
@@ -60,23 +65,33 @@ class DownloadWorker(QThread):
     def cancel(self):
         self._cancel = True
 
+    def _plan_item(self, item):
+        """回傳這個項目要下載的 [(存放資料夾, 檔案)]。"""
+        if not item["is_folder"]:
+            return [(self.output_dir, item)]
+        base = os.path.join(self.output_dir, safe_name(item["name"]))
+        return [(os.path.join(base, *[safe_name(p) for p in parts]), f)
+                for parts, f in self.client.walk(item["id"])]
+
     # ---------- 主流程 ----------
 
     def run(self):
         n_ok = n_skip = n_fail = 0
         blocks = 0          # 連續被防濫用頁擋掉的次數
         try:
-            # 先把每一天有哪些檔案問清楚，才算得出總進度
+            # 先把每個資料夾有哪些檔案問清楚，才算得出總進度
             plan = []
             total_files = 0
-            for d in self.dates:
+            for it in self.items:
                 if self._cancel:
                     break
-                self.current.emit("讀取 %s 的檔案清單…" % d["label"])
-                photos = self.client.list_photos(d["id"])
-                plan.append((d, photos))
-                total_files += len(photos)
-                self.log.emit("%s：%d 張" % (d["label"], len(photos)))
+                if it["is_folder"]:
+                    self.current.emit("讀取 %s 的檔案清單…" % it["name"])
+                files = self._plan_item(it)
+                plan.append((it, files))
+                total_files += len(files)
+                if it["is_folder"]:
+                    self.log.emit("%s：%d 個檔案" % (it["name"], len(files)))
 
             if self._cancel:
                 self.log.emit("已取消。")
@@ -86,38 +101,33 @@ class DownloadWorker(QThread):
             self.file_progress.emit(0, total_files)
             done = 0
 
-            for d, photos in plan:
+            for it, files in plan:
                 if self._cancel:
                     break
-                day_dir = os.path.join(self.output_dir, d["date"])
-                try:
-                    os.makedirs(day_dir)
-                except OSError:
-                    if not os.path.isdir(day_dir):
-                        raise
                 saved = []
 
-                for p in photos:
+                for dest_dir, f in files:
                     if self._cancel:
                         break
-                    name = safe_name(p["name"])
-                    target = os.path.join(day_dir, name)
+                    name = safe_name(f["name"])
+                    target = os.path.join(dest_dir, name)
 
                     # 已存在且大小相同就跳過
                     if self.skip_existing and os.path.exists(target):
-                        same = p["size"] is None or os.path.getsize(target) == p["size"]
+                        same = f["size"] is None or os.path.getsize(target) == f["size"]
                         if same:
                             saved.append(target)
                             n_skip += 1
                             done += 1
                             self.file_progress.emit(done, total_files)
                             continue
-                    if not self.skip_existing:
-                        target = unique_path(day_dir, name)
 
-                    self.current.emit("%s / %s" % (d["label"], name))
+                    self.current.emit(os.path.relpath(target, self.output_dir))
                     try:
-                        self.client.download(p["id"], target)
+                        os.makedirs(dest_dir, exist_ok=True)
+                        if not self.skip_existing:
+                            target = unique_path(dest_dir, name)
+                        self.client.download(f["id"], target)
                         saved.append(target)
                         n_ok += 1
                         blocks = 0
@@ -143,14 +153,14 @@ class DownloadWorker(QThread):
                     break
 
                 zip_path = ""
-                if self.make_zip and saved:
-                    self.current.emit("打包 %s.zip…" % d["date"])
+                if it["is_folder"] and self.make_zip and saved:
+                    self.current.emit("打包 %s.zip…" % safe_name(it["name"]))
                     try:
-                        zip_path = self._make_zip(day_dir, d["date"], saved)
+                        zip_path = self._make_zip(it["name"], saved)
                     except (IOError, OSError) as e:
-                        self.log.emit("  ✗ 打包 %s 失敗：%s" % (d["date"], e))
+                        self.log.emit("  ✗ 打包 %s 失敗：%s" % (it["name"], e))
                         zip_path = ""
-                self.date_done.emit(d["label"], len(saved), zip_path)
+                self.item_done.emit(it["name"], len(saved), zip_path)
 
             if self._cancel:
                 self.log.emit("已取消。")
@@ -163,16 +173,16 @@ class DownloadWorker(QThread):
 
     # ---------- 打包 ----------
 
-    def _make_zip(self, day_dir, date_str, files):
-        """一個日期一個 zip，放在輸出資料夾下（跟日期子資料夾同層）。"""
-        zip_path = os.path.join(self.output_dir, "%s.zip" % date_str)
+    def _make_zip(self, folder_name, files):
+        """一個資料夾一個 zip，放在儲存位置底下（跟資料夾同層）。"""
+        zip_path = os.path.join(self.output_dir, "%s.zip" % safe_name(folder_name))
         tmp = zip_path + ".part"
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
             for f in files:
                 if not os.path.exists(f):
                     continue
-                # 壓縮檔裡保留 20260830/xxx.jpg 這層，解開後不會散一地
-                zf.write(f, os.path.join(date_str, os.path.basename(f)))
+                # 壓縮檔裡保留 資料夾名/子資料夾/檔案 這層，解開後不會散一地
+                zf.write(f, os.path.relpath(f, self.output_dir))
         if os.path.exists(zip_path):
             os.remove(zip_path)
         os.rename(tmp, zip_path)

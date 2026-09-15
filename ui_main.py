@@ -8,7 +8,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QLineEdit, QPushButton, QListWidget, QListWidgetItem, QCheckBox,
-    QProgressBar, QPlainTextEdit, QFileDialog, QMessageBox, QSplitter
+    QProgressBar, QPlainTextEdit, QFileDialog, QMessageBox, QSplitter, QComboBox
 )
 
 import config
@@ -16,8 +16,18 @@ from drive_client import DriveClient, DriveError
 from downloader import DownloadWorker
 
 
+def human_size(n):
+    """1234567 → '1.2 MB'；大小不明回空字串。"""
+    if n is None:
+        return ""
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return "%d %s" % (n, unit) if unit == "B" else "%.1f %s" % (n, unit)
+        n /= 1024.0
+
+
 class ListWorker(QThread):
-    """在背景抓日期資料夾清單，避免按下去畫面卡住。"""
+    """在背景抓資料夾清單，避免按下去畫面卡住。"""
     done = pyqtSignal(list)
     failed = pyqtSignal(str)
 
@@ -27,7 +37,7 @@ class ListWorker(QThread):
 
     def run(self):
         try:
-            self.done.emit(self.client.list_date_folders())
+            self.done.emit(self.client.list_items())
         except DriveError as e:
             self.failed.emit(str(e))
         except Exception as e:
@@ -38,7 +48,7 @@ class MainWindow(QWidget):
     def __init__(self):
         super(MainWindow, self).__init__()
         self.cfg = config.load()
-        self.folders = []          # 目前清單裡的日期資料夾
+        self.rows = []             # 目前讀到的項目（還沒排序）
         self.list_worker = None
         self.dl_worker = None
         self._build_ui()
@@ -48,7 +58,7 @@ class MainWindow(QWidget):
     # ---------------- 介面 ----------------
 
     def _build_ui(self):
-        self.setWindowTitle("施工照片下載工具")
+        self.setWindowTitle("資料夾檔案下載工具")
         self.resize(880, 640)
 
         root = QVBoxLayout(self)
@@ -71,25 +81,32 @@ class MainWindow(QWidget):
         self.ed_folder = QLineEdit()
         self.ed_folder.setPlaceholderText("貼上雲端硬碟資料夾連結，或直接填資料夾 ID")
         g.addWidget(self.ed_folder, 1, 1)
-        self.btn_reload = QPushButton("讀取日期")
-        self.btn_reload.clicked.connect(self.reload_dates)
+        self.btn_reload = QPushButton("讀取清單")
+        self.btn_reload.clicked.connect(self.reload_items)
         g.addWidget(self.btn_reload, 1, 2)
         g.setColumnStretch(1, 1)
 
         root.addWidget(box_conn)
 
-        # --- 中段：日期清單 + 下載選項 ---
+        # --- 中段：項目清單 + 下載選項 ---
         mid = QSplitter(Qt.Horizontal)
 
-        box_dates = QGroupBox("選擇日期（可複選）")
-        v = QVBoxLayout(box_dates)
-        self.list_dates = QListWidget()
-        self.list_dates.itemChanged.connect(lambda _: self._update_count())
-        v.addWidget(self.list_dates)
+        box_items = QGroupBox("選擇要下載的資料夾或檔案（可複選）")
+        v = QVBoxLayout(box_items)
+        row_sort = QHBoxLayout()
+        row_sort.addWidget(QLabel("排序："))
+        self.cmb_sort = QComboBox()
+        self.cmb_sort.addItems(["名稱升冪（A→Z）", "名稱降冪（Z→A）"])
+        self.cmb_sort.currentIndexChanged.connect(lambda _: self._render_list())
+        row_sort.addWidget(self.cmb_sort)
+        row_sort.addStretch(1)
+        v.addLayout(row_sort)
+        self.list_box = QListWidget()
+        self.list_box.itemChanged.connect(lambda _: self._update_count())
+        v.addWidget(self.list_box)
         row = QHBoxLayout()
         for text, fn in (("全選", self.select_all),
                          ("全不選", self.select_none),
-                         ("最近 7 天", self.select_recent7),
                          ("反選", self.select_invert)):
             b = QPushButton(text)
             b.clicked.connect(fn)
@@ -97,7 +114,7 @@ class MainWindow(QWidget):
         v.addLayout(row)
         self.lbl_count = QLabel("尚未讀取")
         v.addWidget(self.lbl_count)
-        mid.addWidget(box_dates)
+        mid.addWidget(box_items)
 
         box_opt = QGroupBox("下載選項")
         v2 = QVBoxLayout(box_opt)
@@ -110,14 +127,15 @@ class MainWindow(QWidget):
         row2.addWidget(b_browse)
         v2.addLayout(row2)
 
-        self.chk_zip = QCheckBox("每個日期另外打包成一個 zip")
+        self.chk_zip = QCheckBox("每個資料夾另外打包成一個 zip")
         self.chk_skip = QCheckBox("已下載過的檔案跳過（大小相同）")
         v2.addWidget(self.chk_zip)
         v2.addWidget(self.chk_skip)
         v2.addWidget(QLabel(
             "檔案會存成：\n"
-            "  儲存位置\\20260830\\照片.jpg\n"
-            "  儲存位置\\20260830.zip"))
+            "  儲存位置\\資料夾\\…（保留子資料夾）\n"
+            "  儲存位置\\資料夾.zip\n"
+            "  儲存位置\\單獨勾選的檔案"))
         v2.addStretch(1)
 
         row3 = QHBoxLayout()
@@ -159,11 +177,12 @@ class MainWindow(QWidget):
         self.ed_out.setText(self.cfg["output_dir"])
         self.chk_zip.setChecked(bool(self.cfg["make_zip"]))
         self.chk_skip.setChecked(bool(self.cfg["skip_existing"]))
+        self.cmb_sort.setCurrentIndex(1 if self.cfg["sort_desc"] else 0)
 
     def _first_run_hint(self):
         """還沒設定金鑰時，直接在訊息區講清楚下一步。"""
         if self.cfg.get("api_key"):
-            self._log("設定已載入，按「讀取日期」開始。")
+            self._log("設定已載入，按「讀取清單」開始。")
             return
         self.lbl_status.setText("還沒設定 API 金鑰")
         self._log(
@@ -179,6 +198,7 @@ class MainWindow(QWidget):
             "output_dir": self.ed_out.text().strip(),
             "make_zip": self.chk_zip.isChecked(),
             "skip_existing": self.chk_skip.isChecked(),
+            "sort_desc": self.cmb_sort.currentIndex() == 1,
         })
         config.save(self.cfg)
 
@@ -195,12 +215,12 @@ class MainWindow(QWidget):
         self._save_settings()
         event.accept()
 
-    # ---------------- 讀取日期 ----------------
+    # ---------------- 讀取清單 ----------------
 
     def _client(self):
         return DriveClient(self.ed_key.text(), self.ed_folder.text())
 
-    def reload_dates(self):
+    def reload_items(self):
         key = self.ed_key.text().strip()
         folder = self.ed_folder.text().strip()
         if not key:
@@ -211,44 +231,63 @@ class MainWindow(QWidget):
             return
         self._save_settings()
         self.btn_reload.setEnabled(False)
-        self.lbl_status.setText("讀取日期資料夾中…")
+        self.lbl_status.setText("讀取資料夾清單中…")
         self.list_worker = ListWorker(self._client(), self)
-        self.list_worker.done.connect(self._on_dates)
+        self.list_worker.done.connect(self._on_items)
         self.list_worker.failed.connect(self._on_list_failed)
         self.list_worker.finished.connect(lambda: self.btn_reload.setEnabled(True))
         self.list_worker.start()
 
-    def _on_dates(self, rows):
-        self.folders = rows
-        self.list_dates.clear()
-        for r in rows:
-            it = QListWidgetItem(r["label"])
-            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
-            it.setCheckState(Qt.Unchecked)
-            it.setData(Qt.UserRole, r)
-            self.list_dates.addItem(it)
-        self.lbl_status.setText("共 %d 個日期資料夾" % len(rows))
-        self._log("讀到 %d 個日期資料夾。" % len(rows))
-        self._update_count()
+    def _on_items(self, rows):
+        self.rows = rows
+        self.list_box.clear()      # 換了新清單，舊的勾選不沿用
+        self._render_list()
+        n_dir = sum(1 for r in rows if r["is_folder"])
+        msg = "共 %d 個資料夾、%d 個檔案" % (n_dir, len(rows) - n_dir)
+        self.lbl_status.setText(msg)
+        self._log("讀到 " + msg + "。")
         if not rows:
-            QMessageBox.information(self, "沒有日期資料夾",
-                                    "這個資料夾底下沒有名稱像 20260830 的日期子資料夾。")
+            QMessageBox.information(self, "資料夾是空的",
+                                    "這個資料夾底下沒有可下載的項目。\n"
+                                    "（Google 文件、試算表這類線上格式不會列出。）")
 
     def _on_list_failed(self, msg):
         self.lbl_status.setText("讀取失敗")
         self._log("讀取失敗：" + msg)
         QMessageBox.critical(self, "讀取失敗", msg)
 
+    def _render_list(self):
+        """依目前的排序方式重畫清單；資料夾永遠排在檔案前面，已勾選的保持勾選。"""
+        checked = {r["id"] for r in self.checked_items()}
+        desc = self.cmb_sort.currentIndex() == 1
+        rows = sorted(self.rows, key=lambda r: r["name"].lower(), reverse=desc)
+        rows.sort(key=lambda r: not r["is_folder"])   # 穩定排序，不會打亂上面的名稱順序
+
+        self.list_box.blockSignals(True)
+        self.list_box.clear()
+        for r in rows:
+            if r["is_folder"]:
+                text = "📁  %s" % r["name"]
+            else:
+                text = "📄  %s    %s" % (r["name"], human_size(r["size"]))
+            it = QListWidgetItem(text)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if r["id"] in checked else Qt.Unchecked)
+            it.setData(Qt.UserRole, r)
+            self.list_box.addItem(it)
+        self.list_box.blockSignals(False)
+        self._update_count()
+
     # ---------------- 勾選 ----------------
 
     def _items(self):
-        return [self.list_dates.item(i) for i in range(self.list_dates.count())]
+        return [self.list_box.item(i) for i in range(self.list_box.count())]
 
     def _set_all(self, state):
-        self.list_dates.blockSignals(True)
+        self.list_box.blockSignals(True)
         for it in self._items():
             it.setCheckState(state)
-        self.list_dates.blockSignals(False)
+        self.list_box.blockSignals(False)
         self._update_count()
 
     def select_all(self):
@@ -257,29 +296,21 @@ class MainWindow(QWidget):
     def select_none(self):
         self._set_all(Qt.Unchecked)
 
-    def select_recent7(self):
-        # 清單本來就是新到舊，取前 7 個
-        self.list_dates.blockSignals(True)
-        for i, it in enumerate(self._items()):
-            it.setCheckState(Qt.Checked if i < 7 else Qt.Unchecked)
-        self.list_dates.blockSignals(False)
-        self._update_count()
-
     def select_invert(self):
-        self.list_dates.blockSignals(True)
+        self.list_box.blockSignals(True)
         for it in self._items():
             it.setCheckState(Qt.Unchecked if it.checkState() == Qt.Checked else Qt.Checked)
-        self.list_dates.blockSignals(False)
+        self.list_box.blockSignals(False)
         self._update_count()
 
-    def checked_dates(self):
+    def checked_items(self):
         return [it.data(Qt.UserRole) for it in self._items()
                 if it.checkState() == Qt.Checked]
 
     def _update_count(self):
-        n = len(self.checked_dates())
-        total = self.list_dates.count()
-        self.lbl_count.setText("已勾選 %d / %d 個日期" % (n, total) if total else "尚未讀取")
+        n = len(self.checked_items())
+        total = self.list_box.count()
+        self.lbl_count.setText("已勾選 %d / %d 個項目" % (n, total) if total else "尚未讀取")
 
     # ---------------- 下載 ----------------
 
@@ -302,9 +333,9 @@ class MainWindow(QWidget):
             subprocess.Popen(["xdg-open", path])
 
     def start_download(self):
-        dates = self.checked_dates()
-        if not dates:
-            QMessageBox.warning(self, "沒有選日期", "請先勾選要下載的日期。")
+        items = self.checked_items()
+        if not items:
+            QMessageBox.warning(self, "沒有勾選", "請先勾選要下載的資料夾或檔案。")
             return
         out = self.ed_out.text().strip()
         if not out:
@@ -321,17 +352,17 @@ class MainWindow(QWidget):
         self._set_busy(True)
         self.bar.setValue(0)
         self._log("─" * 40)
-        self._log("開始下載 %d 個日期 → %s" % (len(dates), out))
+        self._log("開始下載 %d 個項目 → %s" % (len(items), out))
 
         self.dl_worker = DownloadWorker(
-            self._client(), dates, out,
+            self._client(), items, out,
             make_zip=self.chk_zip.isChecked(),
             skip_existing=self.chk_skip.isChecked(),
             parent=self)
         self.dl_worker.log.connect(self._log)
         self.dl_worker.current.connect(self.lbl_status.setText)
         self.dl_worker.file_progress.connect(self._on_progress)
-        self.dl_worker.date_done.connect(self._on_date_done)
+        self.dl_worker.item_done.connect(self._on_item_done)
         self.dl_worker.finished_all.connect(self._on_finished)
         self.dl_worker.failed.connect(self._on_dl_failed)
         self.dl_worker.start()
@@ -351,11 +382,13 @@ class MainWindow(QWidget):
         self.bar.setMaximum(max(total, 1))
         self.bar.setValue(done)
 
-    def _on_date_done(self, label, n, zip_path):
+    def _on_item_done(self, name, n, zip_path):
         if zip_path:
-            self._log("✔ %s 完成，%d 張，已打包 %s" % (label, n, os.path.basename(zip_path)))
+            self._log("✔ %s 完成，%d 個檔案，已打包 %s" % (name, n, os.path.basename(zip_path)))
+        elif n:
+            self._log("✔ %s 完成，%d 個檔案" % (name, n))
         else:
-            self._log("✔ %s 完成，%d 張" % (label, n))
+            self._log("· %s：沒有下載到檔案" % name)
 
     def _on_finished(self, ok, skipped, failed):
         self._set_busy(False)

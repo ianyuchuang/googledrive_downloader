@@ -1,12 +1,12 @@
 @echo off
 chcp 65001 >nul
 set PYTHONIOENCODING=utf-8
-title 施工照片下載工具 － 安裝
+title 資料夾檔案下載工具 － 安裝
 cd /d "%~dp0"
 
 echo.
 echo ============================================================
-echo    施工照片下載工具　安裝
+echo    資料夾檔案下載工具　安裝
 echo ============================================================
 echo.
 
@@ -69,16 +69,16 @@ rem ---------- 4. 桌面捷徑 ----------
 echo.
 echo [4/4] 建立桌面捷徑…
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
- "$w=New-Object -ComObject WScript.Shell; $p=Join-Path $w.SpecialFolders('Desktop') '施工照片下載.lnk'; $s=$w.CreateShortcut($p); $s.TargetPath='%~dp0執行.bat'; $s.WorkingDirectory='%~dp0'; $s.IconLocation='%SystemRoot%\system32\imageres.dll,3'; $s.Description='施工照片下載工具'; $s.Save()" >nul 2>&1
+ "$w=New-Object -ComObject WScript.Shell; $p=Join-Path $w.SpecialFolders('Desktop') '資料夾檔案下載.lnk'; $s=$w.CreateShortcut($p); $s.TargetPath='%~dp0執行.bat'; $s.WorkingDirectory='%~dp0'; $s.IconLocation='%SystemRoot%\system32\imageres.dll,3'; $s.Description='資料夾檔案下載工具'; $s.Save()" >nul 2>&1
 if errorlevel 1 (
     echo    （捷徑沒建成，直接用資料夾裡的 執行.bat 也可以）
 ) else (
-    echo    ✔ 桌面上已經有「施工照片下載」捷徑
+    echo    ✔ 桌面上已經有「資料夾檔案下載」捷徑
 )
 
 echo.
 echo ============================================================
-echo    安裝完成！以後雙擊桌面的「施工照片下載」就能用。
+echo    安裝完成！以後雙擊桌面的「資料夾檔案下載」就能用。
 echo ============================================================
 echo.
 pause

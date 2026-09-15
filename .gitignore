@@ -1,6 +1,7 @@
 # 含 API 金鑰的本機設定，不要進版控
 settings.json
 預設金鑰.txt
+error.log
 
 # Python
 __pycache__/

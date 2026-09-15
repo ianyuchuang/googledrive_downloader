@@ -10,15 +10,16 @@ import os
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_PATH = os.path.join(APP_DIR, "settings.json")
 
-# 照片上傳資料夾 ID 不寫在程式裡（倉庫是公開的），由設定精靈或程式視窗填入 settings.json
+# 要下載的資料夾 ID 不寫在程式裡（倉庫是公開的），由設定精靈或程式視窗填入 settings.json
 DEFAULT_FOLDER_ID = ""
 
 DEFAULTS = {
     "api_key": "",
     "folder_id": DEFAULT_FOLDER_ID,
-    "output_dir": os.path.join(os.path.expanduser("~"), "Desktop", "施工照片"),
+    "output_dir": os.path.join(os.path.expanduser("~"), "Desktop", "雲端硬碟下載"),
     "make_zip": True,
     "skip_existing": True,
+    "sort_desc": False,          # 清單依名稱降冪排列
 }
 
 

@@ -7,7 +7,7 @@
 
 關於「Sorry...」防濫用頁（2026-08-31，已用 診斷.py 實測確認）
 --------------------------------------------------------------
-實測結果（工地這條網路）：
+實測結果（某條會擋下載的網路）：
 
     API 端點 alt=media      ／ 預設 UA    → HTTP 403 防濫用頁
     API 端點 alt=media      ／ 瀏覽器 UA  → HTTP 403 防濫用頁
@@ -30,8 +30,8 @@ import requests
 API_FILES = "https://www.googleapis.com/drive/v3/files"
 UC_DOWNLOAD = "https://drive.usercontent.google.com/download"
 FOLDER_MIME = "application/vnd.google-apps.folder"
+GOOGLE_APPS = "application/vnd.google-apps."
 
-DATE_DIR_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})$")
 CONFIRM_RE = re.compile(r'name="confirm"\s+value="([^"]+)"')
 UUID_RE = re.compile(r'name="uuid"\s+value="([^"]+)"')
 
@@ -110,7 +110,7 @@ class DriveClient(object):
             "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
         })
         self._last_download = 0.0
-        # 哪個端點通就記住，之後優先用它。預設 uc：實測工地網路只有它通
+        # 哪個端點通就記住，之後優先用它。預設 uc：實測有些網路只有它通
         self._preferred = "uc"
 
     # ---------- 列目錄 ----------
@@ -163,36 +163,47 @@ class DriveClient(object):
                 break
         return items
 
-    def list_date_folders(self):
-        """回傳 [{'date','label','id'}]，新到舊。只認合法的 8 位日期資料夾。"""
-        rows = []
-        for f in self._list_children(self.folder_id, "mimeType = '%s'" % FOLDER_MIME):
-            name = f.get("name", "").strip()
-            m = DATE_DIR_RE.match(name)
-            if not m:
-                continue
-            y, mo, d = (int(x) for x in m.groups())
-            if not (2000 <= y <= 2100 and 1 <= mo <= 12 and 1 <= d <= 31):
-                continue
-            rows.append({"date": name,
-                         "label": "%04d-%02d-%02d" % (y, mo, d),
-                         "id": f["id"]})
-        rows.sort(key=lambda r: r["date"], reverse=True)
-        return rows
+    def list_items(self, folder_id=None):
+        """列出資料夾底下的子資料夾與檔案（沒給就列最上層），資料夾排前面，各自依名稱排序。
 
-    def list_photos(self, folder_id):
-        """列出一個日期資料夾底下的照片（排除子資料夾與 Google 文件類型）。"""
-        out = []
-        for f in self._list_children(folder_id):
+        回傳 [{'id','name','mimeType','size','is_folder'}]。
+        Google 文件、試算表、捷徑這類線上格式沒有實體檔案可以下載，不列出。
+        """
+        rows = []
+        for f in self._list_children(folder_id or self.folder_id):
             mime = f.get("mimeType", "")
-            if mime == FOLDER_MIME or mime.startswith("application/vnd.google-apps."):
+            is_folder = mime == FOLDER_MIME
+            if not is_folder and mime.startswith(GOOGLE_APPS):
                 continue
             size = f.get("size")
-            out.append({"id": f["id"],
-                        "name": f.get("name", f["id"]),
-                        "mimeType": mime,
-                        "size": int(size) if size is not None else None})
-        out.sort(key=lambda r: r["name"])
+            rows.append({"id": f["id"],
+                         "name": f.get("name", f["id"]),
+                         "mimeType": mime,
+                         "size": int(size) if size is not None else None,
+                         "is_folder": is_folder})
+        rows.sort(key=lambda r: (not r["is_folder"], r["name"].lower()))
+        return rows
+
+    def walk(self, folder_id):
+        """遞迴列出資料夾底下所有檔案，回傳 [(子資料夾路徑 tuple, 檔案)]。
+
+        路徑不含 folder_id 本身，例如 (('現場', 'A區'), {...})；
+        直接放在 folder_id 底下的檔案路徑是 ()。
+        """
+        out = []
+        seen = set()      # 同一個資料夾可能掛在多個地方，避免繞圈
+
+        def visit(fid, parts):
+            if fid in seen:
+                return
+            seen.add(fid)
+            for r in self.list_items(fid):
+                if r["is_folder"]:
+                    visit(r["id"], parts + (r["name"],))
+                else:
+                    out.append((parts, r))
+
+        visit(folder_id, ())
         return out
 
     # ---------- 下載 ----------
@@ -282,16 +293,16 @@ class DriveClient(object):
             raise DriveError("還沒填 API 金鑰。")
         if not self.folder_id:
             raise DriveError("還沒填資料夾 ID 或連結。")
-        return len(self.list_date_folders())
+        return len(self.list_items())
 
 
 if __name__ == "__main__":
     import sys
-    from config import DEFAULT_FOLDER_ID
-    key = sys.argv[1] if len(sys.argv) > 1 else ""
-    fid = sys.argv[2] if len(sys.argv) > 2 else ""
-    c = DriveClient(key, fid or DEFAULT_FOLDER_ID)
-    folders = c.list_date_folders()
-    print("日期資料夾 %d 個" % len(folders))
-    for r in folders[:10]:
-        print(" ", r["label"], r["id"], "照片", len(c.list_photos(r["id"])), "張")
+    if len(sys.argv) < 3:
+        print("用法：python drive_client.py <API金鑰> <資料夾ID或連結>")
+        sys.exit(1)
+    c = DriveClient(sys.argv[1], sys.argv[2])
+    items = c.list_items()
+    print("最上層 %d 個項目" % len(items))
+    for r in items[:20]:
+        print("  [資料夾]" if r["is_folder"] else "  [檔案]  ", r["name"], r["size"] or "")

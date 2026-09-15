@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 set PYTHONIOENCODING=utf-8
-title 施工照片下載工具
+title 資料夾檔案下載工具
 cd /d "%~dp0"
 
 rem ============================================================

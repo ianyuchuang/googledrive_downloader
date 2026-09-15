@@ -3,7 +3,7 @@
 
     python 診斷.py
 
-會拿最新一個日期資料夾裡的第一張照片，用四種組合各試一次：
+會拿資料夾（含子資料夾）裡找到的第一個檔案，用四種組合各試一次：
   端點（API / 公開下載）× User-Agent（python-requests 預設 / 瀏覽器）
 然後告訴你哪一種能通。把輸出整段複製回報即可。
 """
@@ -45,6 +45,23 @@ def probe(label, url, params, ua):
     return ok
 
 
+def first_file(client):
+    """由上往下一層一層找第一個可下載的檔案，找到就停，不把整棵樹掃完。"""
+    queue = [client.folder_id]
+    seen = set()
+    while queue:
+        fid = queue.pop(0)
+        if fid in seen:
+            continue
+        seen.add(fid)
+        items = client.list_items(fid)
+        for r in items:
+            if not r["is_folder"]:
+                return r
+        queue.extend(r["id"] for r in items if r["is_folder"])
+    return None
+
+
 def main():
     cfg = config.load()
     key, folder = cfg.get("api_key", ""), cfg.get("folder_id", "")
@@ -53,27 +70,25 @@ def main():
         return
 
     print(LINE)
-    print("  施工照片下載工具　連線診斷")
+    print("  資料夾檔案下載工具　連線診斷")
     print(LINE)
     print("  金鑰長度 %d（末四碼 %s）" % (len(key), key[-4:]))
+    if not folder:
+        print("\n  settings.json 裡沒有資料夾，請在程式視窗填好資料夾連結再跑。")
+        return
 
     c = DriveClient(key, folder)
     print("\n[1] 列目錄")
     try:
-        folders = c.list_date_folders()
+        p = first_file(c)
     except Exception as e:
         print("  ✗ 失敗：%s" % e)
         print("\n  列目錄就不通了，先確認金鑰與 Drive API 是否啟用。")
         return
-    print("  ✔ %d 個日期資料夾，最新：%s" % (len(folders), folders[0]["label"] if folders else "無"))
-    if not folders:
+    print("  ✔ 列目錄正常")
+    if not p:
+        print("  這個資料夾（含子資料夾）裡沒有可下載的檔案。")
         return
-
-    photos = c.list_photos(folders[0]["id"])
-    print("  ✔ %s 有 %d 張照片" % (folders[0]["label"], len(photos)))
-    if not photos:
-        return
-    p = photos[0]
     print("  測試對象：%s（%s bytes）" % (p["name"], p["size"]))
 
     print("\n[2] 下載測試")
@@ -98,8 +113,8 @@ def main():
         if not api_ok:
             print("  （API 端點在這條網路被擋，屬已知狀況，程式會自動跳過它。）")
     elif api_ok:
-        print("  這台只有 API 端點通、公開下載端點不通 —— 跟工地網路相反。")
-        print("  程式第一張照片會多試一次才切過去，之後就記住了，不用改設定。")
+        print("  這台只有 API 端點通、公開下載端點不通 —— 跟當初實測的網路相反。")
+        print("  程式第一個檔案會多試一次才切過去，之後就記住了，不用改設定。")
     print("\n  可以通的組合：%s" % ("、".join(good) if good else "無"))
     print(LINE)
 
