@@ -1,0 +1,14 @@
+# 含 API 金鑰的本機設定，不要進版控
+settings.json
+預設金鑰.txt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 系統檔
+Thumbs.db
+desktop.ini
+.DS_Store
