@@ -13,3 +13,7 @@ venv/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# 本機專用：每日排程＋複製到 NAS、待刪除的檔案
+排程/
+_to_delete/
